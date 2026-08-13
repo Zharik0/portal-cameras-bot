@@ -1,3 +1,4 @@
 media
 config.json
 .venv
+__pycache__/
