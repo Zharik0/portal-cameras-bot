@@ -1,14 +1,17 @@
-from typing import Any, cast
+from typing import Any, Iterable, cast
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Message
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.error import BadRequest, TelegramError, TimedOut, NetworkError
 from telegram.request import HTTPXRequest
+import asyncio
+from contextlib import suppress
 import os
 import sys
 import json
 import logging
 from pathlib import Path
 import re
+import time
 
 # Типы для конфигурации
 ConfigDict = dict[str, Any]
@@ -32,6 +35,24 @@ ALLOWED_USERS: list[int] = config["telegram"]["allowed_users"]
 CAMERAS_FOLDER: str = config["paths"]["cameras_dir"]
 VIDEOS_FOLDER: str = config["paths"]["videos_dir"]
 
+_monitoring_config: ConfigDict = config.get("monitoring", {})
+FTP_MONITOR_ENABLED: bool = bool(_monitoring_config.get("ftp_enabled", True))
+FTP_MONITOR_PORT: int = int(_monitoring_config.get("ftp_port", 21))
+FTP_CLOSE_WAIT_THRESHOLD: int = int(
+    _monitoring_config.get("close_wait_threshold", 20)
+)
+FTP_CHECK_INTERVAL_SECONDS: int = int(
+    _monitoring_config.get("check_interval_seconds", 60)
+)
+FTP_NOTIFICATION_COOLDOWN_SECONDS: int = int(
+    _monitoring_config.get("notification_cooldown_seconds", 1800)
+)
+FTP_ALERT_USER_ID: int = int(
+    _monitoring_config.get("alert_user_id", 522053046)
+)
+
+_ftp_monitor_task: asyncio.Task[None] | None = None
+
 # Список камер из конфигурации
 _cameras_list: list[dict[str, Any]] = config["cameras"]
 
@@ -49,6 +70,143 @@ CAMERA_ID_MAP: dict[str, str] = {
 CAMERA_COMMANDS: dict[str, str] = {
     f"camera_{i + 1}": str(camera["name"]) for i, camera in enumerate(_cameras_list)
 }
+
+
+def _count_close_wait_entries(lines: Iterable[str], port: int) -> int:
+    """Посчитать записи CLOSE_WAIT для локального TCP-порта."""
+    count = 0
+
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+
+        try:
+            local_port = int(fields[1].rsplit(":", 1)[1], 16)
+        except (IndexError, ValueError):
+            continue
+
+        if local_port == port and fields[3] == "08":
+            count += 1
+
+    return count
+
+
+def count_ftp_close_wait_connections(port: int) -> int | None:
+    """Посчитать FTP-соединения CLOSE_WAIT через Linux procfs."""
+    total = 0
+    files_read = 0
+
+    for tcp_file in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            with tcp_file.open("r", encoding="ascii") as file:
+                total += _count_close_wait_entries(file, port)
+                files_read += 1
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            logger.warning("Не удалось прочитать %s: %s", tcp_file, error)
+
+    return total if files_read else None
+
+
+async def monitor_ftp_connections(
+    application: Application[Any, ContextTypes.DEFAULT_TYPE, Any, Any, Any, Any],
+) -> None:
+    """Уведомлять администратора о накоплении FTP-соединений CLOSE_WAIT."""
+    last_alert_at: float | None = None
+    problem_active = False
+
+    while True:
+        try:
+            close_wait_count = count_ftp_close_wait_connections(FTP_MONITOR_PORT)
+
+            if close_wait_count is None:
+                logger.warning(
+                    "Мониторинг FTP недоступен: файлы /proc/net/tcp не найдены"
+                )
+            elif close_wait_count >= FTP_CLOSE_WAIT_THRESHOLD:
+                now = time.monotonic()
+                should_notify = (
+                    not problem_active
+                    or last_alert_at is None
+                    or now - last_alert_at >= FTP_NOTIFICATION_COOLDOWN_SECONDS
+                )
+                problem_active = True
+
+                if should_notify:
+                    try:
+                        await application.bot.send_message(
+                            chat_id=FTP_ALERT_USER_ID,
+                            text=(
+                                "Проблема с FTP-соединениями.\n"
+                                f"Соединений CLOSE_WAIT на порту "
+                                f"{FTP_MONITOR_PORT}: {close_wait_count}.\n"
+                                f"Порог уведомления: "
+                                f"{FTP_CLOSE_WAIT_THRESHOLD}.\n"
+                                "Новые фотографии и видео могут перестать "
+                                "поступать. Проверьте FTP-сервис и клиент, "
+                                "который загружает файлы."
+                            ),
+                        )
+                        last_alert_at = now
+                        logger.warning(
+                            "Отправлено уведомление о %s FTP-соединениях "
+                            "CLOSE_WAIT",
+                            close_wait_count,
+                        )
+                    except TelegramError as error:
+                        logger.error(
+                            "Не удалось отправить уведомление о проблеме FTP: %s",
+                            error,
+                        )
+            else:
+                if problem_active:
+                    logger.info(
+                        "Количество FTP-соединений CLOSE_WAIT снизилось до %s",
+                        close_wait_count,
+                    )
+                problem_active = False
+                last_alert_at = None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Ошибка фонового мониторинга FTP")
+
+        await asyncio.sleep(FTP_CHECK_INTERVAL_SECONDS)
+
+
+async def post_init(
+    application: Application[Any, ContextTypes.DEFAULT_TYPE, Any, Any, Any, Any],
+) -> None:
+    """Настроить команды и запустить фоновые задачи."""
+    await setup_bot_commands(application)
+
+    global _ftp_monitor_task
+    if FTP_MONITOR_ENABLED:
+        _ftp_monitor_task = asyncio.create_task(
+            monitor_ftp_connections(application),
+            name="ftp-connection-monitor",
+        )
+        logger.info(
+            "Мониторинг FTP запущен: порт %s, порог CLOSE_WAIT %s",
+            FTP_MONITOR_PORT,
+            FTP_CLOSE_WAIT_THRESHOLD,
+        )
+
+
+async def post_shutdown(
+    application: Application[Any, ContextTypes.DEFAULT_TYPE, Any, Any, Any, Any],
+) -> None:
+    """Остановить фоновые задачи бота."""
+    del application
+
+    global _ftp_monitor_task
+    if _ftp_monitor_task is not None:
+        _ftp_monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _ftp_monitor_task
+        _ftp_monitor_task = None
 
 
 # Функция для получения списка видео для камеры
@@ -647,8 +805,9 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(error_handler)
 
-    # Устанавливаем команды меню при запуске
-    app.post_init = setup_bot_commands
+    # Устанавливаем команды меню и запускаем мониторинг при старте
+    app.post_init = post_init
+    app.post_shutdown = post_shutdown
 
     app.run_polling(drop_pending_updates=True)
 

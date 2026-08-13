@@ -79,6 +79,14 @@
         "dir": "videos",
         "images_dir": "media/cameras"
     },
+    "monitoring": {
+        "ftp_enabled": true,
+        "ftp_port": 21,
+        "close_wait_threshold": 20,
+        "check_interval_seconds": 60,
+        "notification_cooldown_seconds": 1800,
+        "alert_user_id": 123456789
+    },
     "local_dir": "/absolute/path/to/media/cameras",
     "record_duration": 10
 }
