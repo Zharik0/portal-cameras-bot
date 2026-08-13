@@ -1,11 +1,5 @@
 from typing import Any, cast
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    BotCommand,
-    Message,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Message
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.error import BadRequest, TelegramError, TimedOut, NetworkError
 from telegram.request import HTTPXRequest
@@ -77,9 +71,7 @@ def get_videos_for_camera(camera_name: str) -> list[dict[str, str]]:
     # Паттерн 1 (новый): camera_{id}_YYYY-MM-DD_HH-MM_HH-MM.mp4
     pattern_new = rf"camera_{camera_id}_(\d{{4}}-\d{{2}}-\d{{2}})_(\d{{2}}-\d{{2}}_\d{{2}}-\d{{2}})\.mp4"
     # Паттерн 2 (старый): camera_{id}_YYYY-MM-DD_HH-HH.mp4
-    pattern_old = (
-        rf"camera_{camera_id}_(\d{{4}}-\d{{2}}-\d{{2}})_(\d{{2}}-\d{{2}})\.mp4"
-    )
+    pattern_old = rf"camera_{camera_id}_(\d{{4}}-\d{{2}}-\d{{2}})_(\d{{2}}-\d{{2}})\.mp4"
 
     try:
         filenames: list[str] = os.listdir(VIDEOS_FOLDER)
@@ -150,9 +142,7 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 pass
 
 
-async def setup_bot_commands(
-    application: Application[Any, ContextTypes.DEFAULT_TYPE, Any, Any, Any, Any],
-) -> None:
+async def setup_bot_commands(application: Application[Any, ContextTypes.DEFAULT_TYPE, Any, Any, Any, Any]) -> None:
     """Установка команд бота для бокового меню"""
     commands = [BotCommand("start", "Главное меню")]
 
@@ -166,11 +156,7 @@ async def setup_bot_commands(
 
 async def camera_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Универсальный обработчик команд /camera_X"""
-    if (
-        update.effective_user is None
-        or update.message is None
-        or update.message.text is None
-    ):
+    if update.effective_user is None or update.message is None or update.message.text is None:
         return
 
     user_id = update.effective_user.id
@@ -279,7 +265,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard: list[list[InlineKeyboardButton]] = []
     for cam_name in CAMERAS.keys():
         keyboard.append(
-            [InlineKeyboardButton(cam_name, callback_data=f"show_photo_{cam_name}")]
+            [
+                InlineKeyboardButton(
+                    cam_name, callback_data=f"show_photo_{cam_name}"
+                )
+            ]
         )
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -446,9 +436,7 @@ async def show_videos_list(
             keyboard.append(row)
 
     # Добавляем кнопку "Назад"
-    back_button: list[InlineKeyboardButton] = [
-        InlineKeyboardButton("⬅️ Назад", callback_data=f"back_to_camera_{camera_name}")
-    ]
+    back_button: list[InlineKeyboardButton] = [InlineKeyboardButton("⬅️ Назад", callback_data=f"back_to_camera_{camera_name}")]
     keyboard.append(back_button)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -526,6 +514,8 @@ async def show_video(
                 video=video,
                 caption=f"{camera_name}",
                 reply_markup=reply_markup,
+                write_timeout=300,
+                read_timeout=300,
             )
             # Сохраняем message_id
             if context.user_data is not None:
@@ -550,7 +540,11 @@ async def back_to_cameras(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard: list[list[InlineKeyboardButton]] = []
     for cam_name in CAMERAS.keys():
         keyboard.append(
-            [InlineKeyboardButton(cam_name, callback_data=f"show_photo_{cam_name}")]
+            [
+                InlineKeyboardButton(
+                    cam_name, callback_data=f"show_photo_{cam_name}"
+                )
+            ]
         )
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -571,9 +565,7 @@ async def back_to_cameras(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Ошибка при отправке меню камер: {e}")
 
 
-async def send_new_message(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
-) -> None:
+async def send_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     """Отправить новое сообщение об ошибке"""
     query = update.callback_query
     if query is None or query.message is None or not isinstance(query.message, Message):
