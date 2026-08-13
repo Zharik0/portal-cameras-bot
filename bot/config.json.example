@@ -85,7 +85,9 @@
         "close_wait_threshold": 20,
         "check_interval_seconds": 60,
         "notification_cooldown_seconds": 1800,
-        "alert_user_id": 123456789
+        "alert_user_id": 123456789,
+        "ftp_restart_enabled": true,
+        "ftp_service_name": "vsftpd.service"
     },
     "local_dir": "/absolute/path/to/media/cameras",
     "record_duration": 10

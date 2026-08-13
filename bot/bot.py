@@ -50,6 +50,12 @@ FTP_NOTIFICATION_COOLDOWN_SECONDS: int = int(
 FTP_ALERT_USER_ID: int = int(
     _monitoring_config.get("alert_user_id", 522053046)
 )
+FTP_RESTART_ENABLED: bool = bool(
+    _monitoring_config.get("ftp_restart_enabled", True)
+)
+FTP_SERVICE_NAME: str = str(
+    _monitoring_config.get("ftp_service_name", "vsftpd.service")
+)
 
 _ftp_monitor_task: asyncio.Task[None] | None = None
 
@@ -136,6 +142,19 @@ async def monitor_ftp_connections(
 
                 if should_notify:
                     try:
+                        reply_markup = None
+                        if FTP_RESTART_ENABLED:
+                            reply_markup = InlineKeyboardMarkup(
+                                [
+                                    [
+                                        InlineKeyboardButton(
+                                            "Перезапустить FTP",
+                                            callback_data="ftp_restart_request",
+                                        )
+                                    ]
+                                ]
+                            )
+
                         await application.bot.send_message(
                             chat_id=FTP_ALERT_USER_ID,
                             text=(
@@ -148,6 +167,7 @@ async def monitor_ftp_connections(
                                 "поступать. Проверьте FTP-сервис и клиент, "
                                 "который загружает файлы."
                             ),
+                            reply_markup=reply_markup,
                         )
                         last_alert_at = now
                         logger.warning(
@@ -174,6 +194,136 @@ async def monitor_ftp_connections(
             logger.exception("Ошибка фонового мониторинга FTP")
 
         await asyncio.sleep(FTP_CHECK_INTERVAL_SECONDS)
+
+
+async def restart_ftp_service() -> tuple[bool, str]:
+    """Перезапустить настроенный FTP-сервис через systemctl."""
+    if not FTP_RESTART_ENABLED:
+        return False, "Перезапуск FTP отключён в конфигурации."
+
+    systemctl_path = "/usr/bin/systemctl"
+    command = [systemctl_path, "restart", FTP_SERVICE_NAME]
+
+    if os.geteuid() != 0:
+        command = ["/usr/bin/sudo", "-n", *command]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as error:
+        return False, f"Не удалось запустить systemctl: {error}"
+
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.communicate()
+        return False, "Перезапуск FTP не завершился за 30 секунд."
+
+    if process.returncode != 0:
+        details = (stderr or stdout).decode("utf-8", errors="replace").strip()
+        if not details:
+            details = f"systemctl завершился с кодом {process.returncode}."
+        return False, details[:1000]
+
+    return True, ""
+
+
+async def show_ftp_restart_confirmation(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Запросить подтверждение перезапуска FTP."""
+    del context
+
+    query = update.callback_query
+    if query is None:
+        return
+
+    reply_markup = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Подтвердить",
+                    callback_data="ftp_restart_confirm",
+                ),
+                InlineKeyboardButton(
+                    "Отмена",
+                    callback_data="ftp_restart_cancel",
+                ),
+            ]
+        ]
+    )
+    await query.edit_message_text(
+        text=(
+            f"Перезапустить {FTP_SERVICE_NAME}?\n"
+            "Текущие FTP-подключения и активные передачи будут прерваны."
+        ),
+        reply_markup=reply_markup,
+    )
+
+
+async def cancel_ftp_restart(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Отменить перезапуск FTP."""
+    del context
+
+    query = update.callback_query
+    if query is not None:
+        await query.edit_message_text("Перезапуск FTP отменён.")
+
+
+async def confirm_ftp_restart(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Перезапустить FTP после подтверждения администратора."""
+    query = update.callback_query
+    if query is None or query.message is None or not isinstance(query.message, Message):
+        return
+
+    operation_key = (
+        f"ftp_restart:{query.message.chat_id}:{query.message.message_id}"
+    )
+    if context.bot_data.get(operation_key):
+        await query.edit_message_text("Этот запрос на перезапуск уже выполнен.")
+        return
+
+    context.bot_data[operation_key] = True
+    await query.edit_message_text(f"Перезапускаю {FTP_SERVICE_NAME}...")
+
+    success, error = await restart_ftp_service()
+    if not success:
+        await context.bot.edit_message_text(
+            chat_id=query.message.chat_id,
+            message_id=query.message.message_id,
+            text=f"Не удалось перезапустить FTP.\n{error}",
+        )
+        return
+
+    await asyncio.sleep(3)
+    close_wait_count = count_ftp_close_wait_connections(FTP_MONITOR_PORT)
+    if close_wait_count is None:
+        result_text = (
+            f"Сервис {FTP_SERVICE_NAME} перезапущен.\n"
+            "Не удалось проверить количество соединений CLOSE_WAIT."
+        )
+    else:
+        result_text = (
+            f"Сервис {FTP_SERVICE_NAME} перезапущен.\n"
+            f"Соединений CLOSE_WAIT после перезапуска: {close_wait_count}."
+        )
+
+    await context.bot.edit_message_text(
+        chat_id=query.message.chat_id,
+        message_id=query.message.message_id,
+        text=result_text,
+    )
 
 
 async def post_init(
@@ -457,6 +607,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer("У вас нет доступа!", show_alert=True)
         return
 
+    data = query.data
+    if data is None:
+        return
+
+    ftp_admin_actions = {
+        "ftp_restart_request",
+        "ftp_restart_confirm",
+        "ftp_restart_cancel",
+    }
+    if data in ftp_admin_actions and user_id != FTP_ALERT_USER_ID:
+        await query.answer("Недостаточно прав для управления FTP.", show_alert=True)
+        return
+
     # Сначала отвечаем на callback
     try:
         await query.answer()
@@ -466,12 +629,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         raise
 
-    data = query.data
-    if data is None:
-        return
-
     # Определяем тип действия из callback_data
-    if data.startswith("show_photo_"):
+    if data == "ftp_restart_request":
+        await show_ftp_restart_confirmation(update, context)
+
+    elif data == "ftp_restart_confirm":
+        await confirm_ftp_restart(update, context)
+
+    elif data == "ftp_restart_cancel":
+        await cancel_ftp_restart(update, context)
+
+    elif data.startswith("show_photo_"):
         # Показать фото камеры с кнопками "Видео" и "Назад"
         camera_name = data.replace("show_photo_", "")
         await show_camera_photo(update, context, camera_name)
