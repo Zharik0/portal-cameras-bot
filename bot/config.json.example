@@ -1,0 +1,84 @@
+{
+    "telegram": {
+        "token": "YOUR_TELEGRAM_BOT_TOKEN",
+        "allowed_users": [
+            123456789
+        ]
+    },
+    "paths": {
+        "cameras_dir": "/absolute/path/to/media/cameras",
+        "screenshots_dir": "/absolute/path/to/media/cameras/screenshots",
+        "videos_dir": "/absolute/path/to/media/cameras"
+    },
+    "cameras": [
+        {
+            "name": "Улица 1",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.101:554/1/1",
+            "video_file": "camera_1.mp4",
+            "photo_file": "camera_1.jpeg"
+        },
+        {
+            "name": "Улица 2",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.102:554/1/1",
+            "video_file": "camera_2.mp4",
+            "photo_file": "camera_2.jpeg"
+        },
+        {
+            "name": "Линии 6-7",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.103:554/1/1",
+            "video_file": "camera_3.mp4",
+            "photo_file": "camera_3.jpeg"
+        },
+        {
+            "name": "Линии 2-3",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.104:554/1/1",
+            "video_file": "camera_4.mp4",
+            "photo_file": "camera_4.jpeg"
+        },
+        {
+            "name": "Линии 5-4",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.105:554/1/1",
+            "video_file": "camera_5.mp4",
+            "photo_file": "camera_5.jpeg"
+        },
+        {
+            "name": "Ламинация 1",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.106:554/1/1",
+            "video_file": "camera_6.mp4",
+            "photo_file": "camera_6.jpeg"
+        },
+        {
+            "name": "Ламинация 2",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.110:554/1/1",
+            "video_file": "camera_10.mp4",
+            "photo_file": "camera_10.jpeg"
+        },
+        {
+            "name": "Экструзия 1",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.107:554/1/1",
+            "video_file": "camera_7.mp4",
+            "photo_file": "camera_7.jpeg"
+        },
+        {
+            "name": "Экструзия 2",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.108:554/1/1",
+            "video_file": "camera_8.mp4",
+            "photo_file": "camera_8.jpeg"
+        },
+        {
+            "name": "Дробилка",
+            "rtsp_url": "rtsp://USERNAME:PASSWORD@192.168.0.109:554/1/1",
+            "video_file": "camera_9.mp4",
+            "photo_file": "camera_9.jpeg"
+        }
+    ],
+    "ftp": {
+        "server": "ftp.example.com",
+        "user": "FTP_USERNAME",
+        "pass": "FTP_PASSWORD",
+        "dir": "videos",
+        "images_dir": "media/cameras"
+    },
+    "local_dir": "/absolute/path/to/media/cameras",
+    "record_duration": 10
+}
