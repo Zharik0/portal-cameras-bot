@@ -408,7 +408,12 @@ async def show_videos_list(
     videos = get_videos_for_camera(camera_name)
 
     if not videos:
-        await send_new_message(update, context, f"Видео для '{camera_name}' не найдены")
+        await send_new_message(
+            update,
+            context,
+            f"Видео для '{camera_name}' не найдены",
+            back_callback_data=f"back_to_camera_{camera_name}",
+        )
         return
 
     # Удаляем старое сообщение
@@ -467,12 +472,6 @@ async def show_video(
     if query is None or query.message is None or not isinstance(query.message, Message):
         return
 
-    video_path = os.path.join(VIDEOS_FOLDER, video_filename)
-
-    if not os.path.exists(video_path):
-        await send_new_message(update, context, f"Видео не найдено: {video_filename}")
-        return
-
     # Извлекаем информацию из названия файла
     match = re.match(r"camera_(\d+)_(.+)\.mp4", video_filename)
     if not match:
@@ -487,6 +486,17 @@ async def show_video(
             break
 
     camera_name: str = found_camera_name if found_camera_name else f"Камера {camera_id}"
+
+    video_path = os.path.join(VIDEOS_FOLDER, video_filename)
+
+    if not os.path.exists(video_path):
+        await send_new_message(
+            update,
+            context,
+            f"Видео не найдено: {video_filename}",
+            back_callback_data=f"back_to_videos_{camera_name}",
+        )
+        return
 
     # Удаляем старое сообщение
     await delete_message(update, context)
@@ -525,7 +535,12 @@ async def show_video(
                 all_msg_ids.append(msg.message_id)
     except (TimedOut, NetworkError, TelegramError) as e:
         logger.error(f"Ошибка при отправке видео: {e}")
-        await send_new_message(update, context, "Ошибка при загрузке видео")
+        await send_new_message(
+            update,
+            context,
+            "Ошибка при загрузке видео",
+            back_callback_data=f"back_to_videos_{camera_name}",
+        )
 
 
 async def back_to_cameras(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -565,8 +580,13 @@ async def back_to_cameras(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Ошибка при отправке меню камер: {e}")
 
 
-async def send_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """Отправить новое сообщение об ошибке"""
+async def send_new_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    back_callback_data: str = "back_to_cameras",
+) -> None:
+    """Отправить новое сообщение об ошибке с кнопкой возврата"""
     query = update.callback_query
     if query is None or query.message is None or not isinstance(query.message, Message):
         return
@@ -574,10 +594,22 @@ async def send_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     # Удаляем старое сообщение
     await delete_message(update, context)
 
+    reply_markup = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Назад",
+                    callback_data=back_callback_data,
+                )
+            ]
+        ]
+    )
+
     try:
         msg = await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=f"{text}",
+            text=text,
+            reply_markup=reply_markup,
         )
         # Сохраняем message_id
         if context.user_data is not None:
