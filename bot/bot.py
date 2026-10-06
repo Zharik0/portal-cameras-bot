@@ -75,7 +75,6 @@ CAMERA_NOTIFICATION_COOLDOWN_SECONDS: int = max(
     1, int(_monitoring_config.get("camera_notification_cooldown_seconds", 1800))
 )
 _camera_monitor_task: asyncio.Task[None] | None = None
-_camera_online_status: dict[str, bool] = {}
 
 # Список камер из конфигурации
 _cameras_list: list[dict[str, Any]] = config["cameras"]
@@ -260,7 +259,6 @@ async def monitor_camera_connections(
 ) -> None:
     """Проверять камеры и отправлять уведомления с ограничением повторов."""
     last_alert_at: dict[str, float] = {}
-    _camera_online_status.clear()
 
     if shutil.which("ffprobe") is None:
         logger.error("Мониторинг камер недоступен: установите FFmpeg (ffprobe)")
@@ -285,7 +283,6 @@ async def monitor_camera_connections(
                     await check_camera_connection(rtsp_url)
                     if rtsp_url else "RTSP-адрес камеры не настроен."
                 )
-                _camera_online_status[camera_name] = error is None
                 if error is None:
                     last_alert_at.pop(camera_name, None)
                     continue
@@ -314,7 +311,6 @@ async def monitor_camera_connections(
             except TelegramError:
                 logger.error("Не удалось отправить уведомление о камере %s", camera_name)
             except Exception:
-                _camera_online_status.pop(camera_name, None)
                 # Не записываем исключение: оно может содержать секретный URL.
                 logger.error("Ошибка мониторинга камеры %s", camera_name)
 
@@ -639,32 +635,6 @@ async def camera_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await show_camera_photo_from_command(update, context, camera_name)
 
 
-def get_camera_status_text(camera_name: str) -> str:
-    """Получить общий для пользователей последний статус камеры."""
-    online = _camera_online_status.get(camera_name)
-    if online is True:
-        return "В сети"
-    if online is False:
-        return "Не в сети"
-    return "Статус подключения неизвестен"
-
-
-async def get_camera_photo_caption(camera_name: str, file_path: str) -> str:
-    """Добавить последний статус RTSP и возраст файла для отключённой камеры."""
-    caption = f"{camera_name}\n{get_camera_status_text(camera_name)}"
-    if _camera_online_status.get(camera_name) is not False:
-        return caption
-    try:
-        modified_at = await asyncio.to_thread(os.path.getmtime, file_path)
-    except OSError:
-        return f"{caption}\nВозраст фотографии неизвестен"
-
-    age_seconds = max(0, time.time() - modified_at)
-    if age_seconds < 60:
-        return f"{caption}\nФотографии меньше минуты"
-    return f"{caption}\nВозраст фотографии: {int(age_seconds // 60)} мин."
-
-
 async def show_camera_photo_from_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE, camera_name: str
 ) -> None:
@@ -690,12 +660,11 @@ async def show_camera_photo_from_command(
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    caption = await get_camera_photo_caption(camera_name, file_path)
     try:
         with open(file_path, "rb") as photo:
             msg = await update.message.reply_photo(
                 photo=photo,
-                caption=caption,
+                caption=f"{camera_name}",
                 reply_markup=reply_markup,
             )
             # Сохраняем message_id
@@ -741,7 +710,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    f"{cam_name} — {get_camera_status_text(cam_name)}",
+                    cam_name,
                     callback_data=f"show_photo_{cam_name}",
                 )
             ]
@@ -878,13 +847,12 @@ async def show_camera_photo(
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    caption = await get_camera_photo_caption(camera_name, file_path)
     try:
         with open(file_path, "rb") as photo:
             msg = await context.bot.send_photo(
                 chat_id=query.message.chat_id,
                 photo=photo,
-                caption=caption,
+                caption=f"{camera_name}",
                 reply_markup=reply_markup,
             )
             # Сохраняем message_id
@@ -1058,7 +1026,7 @@ async def back_to_cameras(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    f"{cam_name} — {get_camera_status_text(cam_name)}",
+                    cam_name,
                     callback_data=f"show_photo_{cam_name}",
                 )
             ]
