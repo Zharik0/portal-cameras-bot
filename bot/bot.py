@@ -11,6 +11,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import shutil
 import time
 
 # Типы для конфигурации
@@ -58,6 +59,22 @@ FTP_SERVICE_NAME: str = str(
 )
 
 _ftp_monitor_task: asyncio.Task[None] | None = None
+CAMERA_MONITOR_ENABLED: bool = bool(
+    _monitoring_config.get("camera_enabled", True)
+)
+CAMERA_ALERT_USER_ID: int = int(
+    _monitoring_config.get("camera_alert_user_id", 522053046)
+)
+CAMERA_CHECK_INTERVAL_SECONDS: int = max(
+    1, int(_monitoring_config.get("camera_check_interval_seconds", 60))
+)
+CAMERA_CONNECTION_TIMEOUT_SECONDS: int = max(
+    1, int(_monitoring_config.get("camera_connection_timeout_seconds", 15))
+)
+CAMERA_NOTIFICATION_COOLDOWN_SECONDS: int = max(
+    1, int(_monitoring_config.get("camera_notification_cooldown_seconds", 1800))
+)
+_camera_monitor_task: asyncio.Task[None] | None = None
 
 # Список камер из конфигурации
 _cameras_list: list[dict[str, Any]] = config["cameras"]
@@ -196,6 +213,105 @@ async def monitor_ftp_connections(
         await asyncio.sleep(FTP_CHECK_INTERVAL_SECONDS)
 
 
+async def check_camera_connection(rtsp_url: str) -> str | None:
+    """Проверить видеопоток; вернуть безопасное описание ошибки или None."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-rtsp_transport", "tcp",
+            "-select_streams", "v:0", "-show_entries", "stream=codec_type",
+            "-of", "json", rtsp_url,
+            stdout=asyncio.subprocess.PIPE,
+            # Вывод ffprobe может содержать RTSP-адрес и пароль камеры.
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
+        return "Не удалось запустить ffprobe для проверки камеры."
+
+    try:
+        stdout, _ = await asyncio.wait_for(
+            process.communicate(), timeout=CAMERA_CONNECTION_TIMEOUT_SECONDS
+        )
+    except (TimeoutError, asyncio.CancelledError) as error:
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.communicate()
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        return (
+            "Камера не ответила за "
+            f"{CAMERA_CONNECTION_TIMEOUT_SECONDS} секунд."
+        )
+
+    if process.returncode != 0:
+        return "Не удалось подключиться к RTSP-потоку камеры."
+
+    try:
+        streams = json.loads(stdout).get("streams", [])
+        if any(stream.get("codec_type") == "video" for stream in streams):
+            return None
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return "Камера не предоставила видеопоток."
+
+
+async def monitor_camera_connections(
+    application: Application[Any, ContextTypes.DEFAULT_TYPE, Any, Any, Any, Any],
+) -> None:
+    """Проверять камеры и отправлять уведомления с ограничением повторов."""
+    last_alert_at: dict[str, float] = {}
+
+    if shutil.which("ffprobe") is None:
+        logger.error("Мониторинг камер недоступен: установите FFmpeg (ffprobe)")
+        try:
+            await application.bot.send_message(
+                chat_id=CAMERA_ALERT_USER_ID,
+                text=(
+                    "Мониторинг подключения к камерам недоступен. "
+                    "Установите FFmpeg (ffprobe) на сервере и перезапустите бота."
+                ),
+            )
+        except TelegramError:
+            logger.error("Не удалось отправить уведомление о настройке мониторинга камер")
+        return
+
+    while True:
+        for camera in _cameras_list:
+            camera_name = str(camera["name"])
+            try:
+                rtsp_url = str(camera.get("rtsp_url", ""))
+                error = (
+                    await check_camera_connection(rtsp_url)
+                    if rtsp_url else "RTSP-адрес камеры не настроен."
+                )
+                if error is None:
+                    last_alert_at.pop(camera_name, None)
+                    continue
+
+                now = time.monotonic()
+                previous_alert = last_alert_at.get(camera_name)
+                if (
+                    previous_alert is not None
+                    and now - previous_alert < CAMERA_NOTIFICATION_COOLDOWN_SECONDS
+                ):
+                    continue
+
+                await application.bot.send_message(
+                    chat_id=CAMERA_ALERT_USER_ID,
+                    text=f"Ошибка подключения к камере «{camera_name}».\n{error}",
+                )
+                last_alert_at[camera_name] = time.monotonic()
+                logger.warning("Отправлено уведомление о недоступности камеры %s", camera_name)
+            except asyncio.CancelledError:
+                raise
+            except TelegramError:
+                logger.error("Не удалось отправить уведомление о камере %s", camera_name)
+            except Exception:
+                # Не записываем исключение: оно может содержать секретный URL.
+                logger.error("Ошибка мониторинга камеры %s", camera_name)
+
+        await asyncio.sleep(CAMERA_CHECK_INTERVAL_SECONDS)
+
+
 async def restart_ftp_service() -> tuple[bool, str]:
     """Перезапустить настроенный FTP-сервис через systemctl."""
     if not FTP_RESTART_ENABLED:
@@ -332,6 +448,13 @@ async def post_init(
     """Настроить команды и запустить фоновые задачи."""
     await setup_bot_commands(application)
 
+    global _camera_monitor_task
+    if CAMERA_MONITOR_ENABLED:
+        _camera_monitor_task = asyncio.create_task(
+            monitor_camera_connections(application),
+            name="camera-connection-monitor",
+        )
+
     global _ftp_monitor_task
     if FTP_MONITOR_ENABLED:
         _ftp_monitor_task = asyncio.create_task(
@@ -350,6 +473,13 @@ async def post_shutdown(
 ) -> None:
     """Остановить фоновые задачи бота."""
     del application
+
+    global _camera_monitor_task
+    if _camera_monitor_task is not None:
+        _camera_monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _camera_monitor_task
+        _camera_monitor_task = None
 
     global _ftp_monitor_task
     if _ftp_monitor_task is not None:

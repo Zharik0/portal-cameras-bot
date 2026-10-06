@@ -80,6 +80,11 @@
         "images_dir": "media/cameras"
     },
     "monitoring": {
+        "camera_enabled": true,
+        "camera_alert_user_id": 123456789,
+        "camera_check_interval_seconds": 60,
+        "camera_connection_timeout_seconds": 15,
+        "camera_notification_cooldown_seconds": 1800,
         "ftp_enabled": true,
         "ftp_port": 21,
         "close_wait_threshold": 20,

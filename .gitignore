@@ -2,5 +2,7 @@ media
 config.json
 .venv
 __pycache__/
+*.pyc
 AGENTS.md
 **/.DS_Store
+.vscode

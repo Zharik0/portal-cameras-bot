@@ -1,1 +1,12 @@
+# Требуемая версия интерпретатора: Python 3.12.x.
+# Python не устанавливается через requirements.txt. Создание и активация venv:
+#   python3.12 -m venv venv
+#   source venv/bin/activate
+#   python -m pip install -r requirements.txt
+
+# Telegram Bot API: команды, обработчики, кнопки и отправка медиа.
 python-telegram-bot==22.8
+
+# Модули asyncio, contextlib, json, logging, os, pathlib, re, sys, time
+# и typing входят в стандартную библиотеку Python и не требуют отдельной
+# установки.
